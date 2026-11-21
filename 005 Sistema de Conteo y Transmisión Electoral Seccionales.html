@@ -27779,9 +27779,11 @@ async function startMysql(){
  if(location.protocol!=="http:"&&location.protocol!=="https:")return false;
  try{
   const r=await fetch("api.php?action=load",{cache:"no-store"});
-  if(!r.ok)return false;
-  const j=await r.json();
-  if(!j||!j.ok||!j.data)return false;
+  const j=await r.json().catch(()=>null);
+  if(!r.ok||!j||!j.ok||!j.data){
+   if(j&&j.error){console.warn("mysql load error:",j.error);toast("Error de conexión MySQL: "+j.error,"error")}
+   return false;
+  }
   mysqlMode=true;
   const d=j.data;
   const isEmpty=(!d.dist||!d.dist.length)&&(!d.cand||!d.cand.length)&&(!d.deleg||!d.deleg.length)&&(!d.actas||!Object.keys(d.actas).length);

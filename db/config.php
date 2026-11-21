@@ -2,19 +2,25 @@
 declare(strict_types=1);
 
 /**
- * Configuración de conexión MySQL para andcontrolelectoral.
- * Puede sobrescribirse mediante variables de entorno:
+ * Configuración de conexión MySQL para adncontrolelectoral.
+ * Puede sobrescribirse mediante db/config.local.php o variables de entorno:
  * DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
  */
 function getDbConfig(): array
 {
+    $localFile = __DIR__ . '/config.local.php';
+    $local = is_file($localFile) ? (require $localFile) : [];
+    if (!is_array($local)) {
+        $local = [];
+    }
+
     return [
-        'host'    => getenv('DB_HOST') ?: '127.0.0.1',
-        'port'    => getenv('DB_PORT') ?: '3306',
-        'dbname'  => getenv('DB_NAME') ?: 'andcontrolelectoral',
-        'user'    => getenv('DB_USER') ?: 'adn_user',
-        'pass'    => getenv('DB_PASS') ?: 'AdnElectoral2026!',
-        'charset' => 'utf8mb4',
+        'host'    => $local['host']    ?? (getenv('DB_HOST') ?: '127.0.0.1'),
+        'port'    => $local['port']    ?? (getenv('DB_PORT') ?: '3306'),
+        'dbname'  => $local['dbname']  ?? (getenv('DB_NAME') ?: 'adncontrolelectoral'),
+        'user'    => $local['user']    ?? (getenv('DB_USER') ?: 'adn_user'),
+        'pass'    => $local['pass']    ?? (getenv('DB_PASS') ?: 'AdnElectoral2026!'),
+        'charset' => $local['charset'] ?? 'utf8mb4',
     ];
 }
 
