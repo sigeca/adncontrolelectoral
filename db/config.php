@@ -48,3 +48,13 @@ function getPdo(): PDO
 
     return $pdo;
 }
+
+function getGeminiApiKey(): string
+{
+    $localFile = __DIR__ . '/config.local.php';
+    $local = is_file($localFile) ? (require $localFile) : [];
+    if (is_array($local) && !empty($local['gemini_api_key'])) {
+        return trim((string)$local['gemini_api_key']);
+    }
+    return trim((string)(getenv('GEMINI_API_KEY') ?: ''));
+}
