@@ -27699,11 +27699,12 @@ async function pushMysql(){
  pushing=true;let ok=true;
  try{
   setStatus("saving");
+  await processPhotos();
   const S=src();
   const payload={dist:S.dist,cand:S.cand,deleg:S.deleg,actas:S.actas,resp:S.resp,pagos:S.pagos,tarifas:S.tarifas,users:S.users,audit:S.audit};
   const r=await fetch("api.php?action=sync",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-  const j=await r.json();
-  if(!r.ok||!j.ok)throw new Error(j.error||("HTTP "+r.status));
+  const j=await r.json().catch(()=>null);
+  if(!r.ok||!j||!j.ok)throw new Error((j&&j.error)||("HTTP "+r.status));
  }catch(e){ok=false;console.warn("mysql sync push",e);setStatus("error");setTimeout(schedule,5000)}
  finally{pushing=false;if(ok)setStatus("ok");if(again){again=false;schedule()}}
 }
@@ -28001,6 +28002,30 @@ async function callGeminiDirect(apiKey, imageDataUrl, dignidad, candidatos) {
   return JSON.parse(txt);
 }
 
+function resizeImageForOcr(u) {
+  return new Promise(res => {
+    if (!u || typeof u !== "string" || !u.startsWith("data:image")) return res(u);
+    const im = new Image();
+    im.onload = () => {
+      let w = im.naturalWidth, h = im.naturalHeight;
+      let sc = Math.min(1, 1600 / Math.max(w, h)), q = 0.85, out = u;
+      for (let i = 0; i < 5; i++) {
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(w * sc));
+        c.height = Math.max(1, Math.round(h * sc));
+        c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+        out = c.toDataURL("image/jpeg", q);
+        if (out.length <= 450000) break;
+        sc *= 0.8;
+        q = Math.max(0.55, q - 0.1);
+      }
+      res(out);
+    };
+    im.onerror = () => res(u);
+    im.src = u;
+  });
+}
+
 window.leerBorradorConGemini = async function(autoTriggered = false) {
   const imgData = window.currentBorradorFotoData;
   if (!imgData) {
@@ -28025,37 +28050,46 @@ window.leerBorradorConGemini = async function(autoTriggered = false) {
   try {
     let result;
     const browserKey = getKey();
+    const ocrImg = await resizeImageForOcr(imgData);
     if (location.protocol === "http:" || location.protocol === "https:") {
-      const resp = await fetch("api.php?action=ocr_borrador", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageDataUrl: imgData,
-          dignidad,
-          candidatos,
-          apiKey: browserKey || undefined
-        })
-      });
-      const json = await resp.json().catch(() => null);
-      if (!resp.ok || !json || !json.ok) {
-        if (json && json.needKey) {
-          setOcrStatus('Falta la API Key de Gemini. Haz clic en <b>API Key</b> para ingresarla y luego presiona <b>Leer Votos con Gemini</b>.', "warn");
-          if (!autoTriggered) {
-            window.configurarGeminiApiKey();
-            if (getKey()) return window.leerBorradorConGemini(false);
+      try {
+        const resp = await fetch("api.php?action=ocr_borrador", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageDataUrl: ocrImg,
+            dignidad,
+            candidatos,
+            apiKey: browserKey || undefined
+          })
+        });
+        const json = await resp.json().catch(() => null);
+        if (!resp.ok || !json || !json.ok) {
+          if (json && json.needKey) {
+            setOcrStatus('Falta la API Key de Gemini. Haz clic en <b>API Key</b> para ingresarla y luego presiona <b>Leer Votos con Gemini</b>.', "warn");
+            if (!autoTriggered) {
+              window.configurarGeminiApiKey();
+              if (getKey()) return window.leerBorradorConGemini(false);
+            }
+            return;
           }
-          return;
+          throw new Error((json && json.error) || ("Error HTTP " + resp.status));
         }
-        throw new Error((json && json.error) || ("Error HTTP " + resp.status));
+        result = json.result;
+      } catch (proxyErr) {
+        if (browserKey) {
+          result = await callGeminiDirect(browserKey, ocrImg, dignidad, candidatos);
+        } else {
+          throw proxyErr;
+        }
       }
-      result = json.result;
     } else {
       if (!browserKey) {
         setOcrStatus('Configura tu API Key de Gemini para leer la foto.', "warn");
         if (!autoTriggered) window.configurarGeminiApiKey();
         return;
       }
-      result = await callGeminiDirect(browserKey, imgData, dignidad, candidatos);
+      result = await callGeminiDirect(browserKey, ocrImg, dignidad, candidatos);
     }
 
     let aplicados = 0;
