@@ -93,7 +93,7 @@ if ($action === 'ocr_borrador' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             ],
         ], JSON_UNESCAPED_UNICODE);
 
-        $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' . urlencode($apiKey);
+        $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=' . urlencode($apiKey);
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
