@@ -1501,7 +1501,13 @@ window.addEventListener("pageshow",function(e){if(e.persisted){var b=document.qu
             </div>
 
             <!-- Lectura automática con IA (Gemini) -->
-            <div class="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+            <div id="ocr-admin-bar" class="hidden pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <span id="ocr-canton-badge" class="text-[11px] font-semibold px-2 py-1 rounded-md bg-slate-100 text-slate-600 border border-slate-200"></span>
+              <button type="button" id="btn-ocr-cantones-admin" onclick="openOcrCantonesModal()" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-[11px] font-bold shadow-sm transition inline-flex items-center gap-1.5" title="Habilitar o deshabilitar lectura inteligente por cantón (Solo Administrador)">
+                <i class="fa-solid fa-sliders"></i> <span>Lectura IA por Cantón</span>
+              </button>
+            </div>
+            <div id="ocr-user-controls" class="hidden pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
               <label class="inline-flex items-center gap-1.5 text-[11px] text-slate-600 font-medium cursor-pointer select-none">
                 <input type="checkbox" id="chk-borrador-auto-ocr" checked class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
                 <span>Auto-leer votos con IA al tomar foto</span>
@@ -5413,11 +5419,7 @@ window.addEventListener("pageshow",function(e){if(e.persisted){var b=document.qu
         btnFs?.classList.add("hidden");
         btnRemove?.classList.add("hidden");
       }
-      const ocrBtn = document.getElementById("btn-borrador-ocr-gemini");
-      if (ocrBtn) {
-        if (window.currentBorradorFotoData || window.currentActaFotoData) ocrBtn.classList.remove("hidden");
-        else ocrBtn.classList.add("hidden");
-      }
+      if (typeof window.refreshOcrCantonUI === "function") window.refreshOcrCantonUI();
       applyActaFotoTransform();
       updatePhotoStatusDots();
     }
@@ -5458,11 +5460,7 @@ window.addEventListener("pageshow",function(e){if(e.persisted){var b=document.qu
         btnFs?.classList.add("hidden");
         btnRemove?.classList.add("hidden");
       }
-      const ocrBtn = document.getElementById("btn-borrador-ocr-gemini");
-      if (ocrBtn) {
-        if (window.currentBorradorFotoData || window.currentActaFotoData) ocrBtn.classList.remove("hidden");
-        else ocrBtn.classList.add("hidden");
-      }
+      if (typeof window.refreshOcrCantonUI === "function") window.refreshOcrCantonUI();
       applyBorradorFotoTransform();
       updatePhotoStatusDots();
     }
@@ -13634,8 +13632,204 @@ boton();setTimeout(boton,1000);
 (function(){
 "use strict";
 const KEY_LS = "CNE_GEMINI_API_KEY";
+const OCR_CFG_LS = "CNE_OCR_CANTONES_V1";
 const getKey = () => { try { return (localStorage.getItem(KEY_LS) || "").trim(); } catch (e) { return ""; } };
 const setKey = k => { try { k ? localStorage.setItem(KEY_LS, k.trim()) : localStorage.removeItem(KEY_LS); } catch (e) {} };
+const normCanton = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+const esAdmin = () => { try { return !!(window.__UM && window.__UM.rol && window.__UM.rol() === "superadmin"); } catch (e) { return false; } };
+
+function getAllCantones() {
+  const dist = (window.AppState && Array.isArray(AppState.distributivo)) ? AppState.distributivo : [];
+  const set = new Set(dist.map(d => normCanton(d.canton)).filter(Boolean));
+  if (!set.size) {
+    ["ATACAMES","ELOY ALFARO","ESMERALDAS","MUISNE","QUININDE","RIO VERDE","SAN LORENZO"].forEach(c => set.add(c));
+  }
+  return Array.from(set).sort();
+}
+
+function getOcrCantonesMap() {
+  try {
+    const P = window.__PAGOS && window.__PAGOS.get ? window.__PAGOS.get() : null;
+    if (P && P.tarifas && P.tarifas.ocr_cantones && typeof P.tarifas.ocr_cantones === "object") {
+      return Object.assign({}, P.tarifas.ocr_cantones);
+    }
+  } catch (e) {}
+  try {
+    const raw = localStorage.getItem(OCR_CFG_LS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+  } catch (e) {}
+  return {};
+}
+
+function saveOcrCantonesMap(map) {
+  const clean = {};
+  Object.keys(map || {}).forEach(k => {
+    const nk = normCanton(k);
+    if (nk) clean[nk] = !!map[k];
+  });
+  try { localStorage.setItem(OCR_CFG_LS, JSON.stringify(clean)); } catch (e) {}
+  try {
+    if (window.__PAGOS && window.__PAGOS.get && window.__PAGOS.set) {
+      const P = window.__PAGOS.get();
+      const nextTarifas = Object.assign({}, P.tarifas || {}, { ocr_cantones: clean });
+      window.__PAGOS.set(nextTarifas, P.pagos || {});
+    }
+  } catch (e) {}
+  try { if (window.__SYNC && window.__SYNC.schedule) window.__SYNC.schedule(); } catch (e) {}
+  window.refreshOcrCantonUI();
+}
+
+function getCurrentCanton() {
+  const el = document.getElementById("sel-canton");
+  const v = (el && el.value) || (window.AppState && AppState.selectedCanton) || "";
+  return normCanton(v);
+}
+
+function isOcrEnabledForCanton(canton) {
+  const nc = normCanton(canton);
+  if (!nc) return false;
+  const map = getOcrCantonesMap();
+  return !!map[nc];
+}
+
+function isOcrEnabledForCurrentCanton() {
+  return isOcrEnabledForCanton(getCurrentCanton());
+}
+
+window.refreshOcrCantonUI = function() {
+  const adminBar = document.getElementById("ocr-admin-bar");
+  const userControls = document.getElementById("ocr-user-controls");
+  const ocrBtn = document.getElementById("btn-borrador-ocr-gemini");
+  const badge = document.getElementById("ocr-canton-badge");
+  const btnAdmin = document.getElementById("btn-ocr-cantones-admin");
+  const statusEl = document.getElementById("borrador-ocr-status");
+
+  const admin = esAdmin();
+  const canton = getCurrentCanton();
+  const enabled = isOcrEnabledForCanton(canton);
+
+  if (adminBar) adminBar.classList.toggle("hidden", !admin);
+  if (admin && badge) {
+    const cantones = getAllCantones();
+    const map = getOcrCantonesMap();
+    const onCount = cantones.filter(c => !!map[c]).length;
+    if (canton) {
+      badge.className = enabled
+        ? "text-[11px] font-semibold px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200"
+        : "text-[11px] font-semibold px-2 py-1 rounded-md bg-slate-100 text-slate-600 border border-slate-200";
+      badge.innerHTML = `<i class="fa-solid ${enabled ? "fa-wand-magic-sparkles text-emerald-600" : "fa-ban text-slate-400"} mr-1"></i>IA en <b>${canton}</b>: ${enabled ? "Habilitada" : "Deshabilitada"}`;
+    } else {
+      badge.className = "text-[11px] font-semibold px-2 py-1 rounded-md bg-slate-100 text-slate-600 border border-slate-200";
+      badge.textContent = "Lectura IA por cantón";
+    }
+    if (btnAdmin) {
+      btnAdmin.innerHTML = `<i class="fa-solid fa-sliders"></i> <span>Lectura IA por Cantón (${onCount}/${cantones.length})</span>`;
+    }
+  }
+
+  if (userControls) userControls.classList.toggle("hidden", !enabled);
+  if (ocrBtn) {
+    const hasPhoto = !!(window.currentBorradorFotoData || window.currentActaFotoData);
+    ocrBtn.classList.toggle("hidden", !(enabled && hasPhoto));
+  }
+  if (!enabled && statusEl) {
+    statusEl.classList.add("hidden");
+    statusEl.innerHTML = "";
+  }
+};
+
+function renderOcrCantonesModalBody() {
+  const body = document.getElementById("ocr-cantones-modal-body");
+  if (!body) return;
+  const cantones = getAllCantones();
+  const map = getOcrCantonesMap();
+  body.innerHTML = cantones.map(c => {
+    const on = !!map[c];
+    return `
+      <label class="flex items-center justify-between p-3 rounded-xl border ${on ? "border-indigo-200 bg-indigo-50/60" : "border-slate-200 bg-white"} cursor-pointer hover:bg-slate-50 transition">
+        <div class="flex items-center gap-2.5">
+          <span class="w-2.5 h-2.5 rounded-full ${on ? "bg-emerald-500" : "bg-slate-300"}"></span>
+          <span class="text-xs font-bold text-slate-800">${c}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold ${on ? "text-emerald-700" : "text-slate-400"}">${on ? "Habilitada" : "Deshabilitada"}</span>
+          <input type="checkbox" data-ocr-canton="${c}" ${on ? "checked" : ""} class="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+        </div>
+      </label>
+    `;
+  }).join("");
+  body.querySelectorAll("input[data-ocr-canton]").forEach(chk => {
+    chk.addEventListener("change", () => {
+      if (!esAdmin()) return;
+      const next = getOcrCantonesMap();
+      next[chk.dataset.ocrCanton] = chk.checked;
+      saveOcrCantonesMap(next);
+      renderOcrCantonesModalBody();
+    });
+  });
+}
+
+window.openOcrCantonesModal = function() {
+  if (!esAdmin()) {
+    showToast("Solo el Administrador puede habilitar o deshabilitar la lectura inteligente por cantón.", "error");
+    return;
+  }
+  let m = document.getElementById("modal-ocr-cantones");
+  if (!m) {
+    m = document.createElement("div");
+    m.id = "modal-ocr-cantones";
+    m.className = "fixed inset-0 z-[9990] bg-slate-900/60 flex items-center justify-center p-4";
+    m.innerHTML = `
+      <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-black text-slate-900 flex items-center gap-2">
+              <i class="fa-solid fa-wand-magic-sparkles text-indigo-600"></i>
+              Lectura Inteligente de Actas por Cantón
+            </h3>
+            <p class="text-[11px] text-slate-500 mt-0.5">Habilita o deshabilita el OCR con Gemini AI para cada cantón.</p>
+          </div>
+          <button type="button" id="ocr-modal-close" class="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div class="px-5 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-end gap-2">
+          <button type="button" id="ocr-modal-all-on" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold transition">Habilitar todos</button>
+          <button type="button" id="ocr-modal-all-off" class="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-[11px] font-bold transition">Deshabilitar todos</button>
+        </div>
+        <div id="ocr-cantones-modal-body" class="p-5 space-y-2 max-h-[60vh] overflow-y-auto"></div>
+        <div class="px-5 py-3 border-t border-slate-100 flex justify-end">
+          <button type="button" id="ocr-modal-done" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition">Listo</button>
+        </div>
+      </div>
+    `;
+    m.addEventListener("click", e => { if (e.target === m) m.classList.add("hidden"); });
+    document.body.appendChild(m);
+    m.querySelector("#ocr-modal-close").onclick = () => m.classList.add("hidden");
+    m.querySelector("#ocr-modal-done").onclick = () => m.classList.add("hidden");
+    m.querySelector("#ocr-modal-all-on").onclick = () => {
+      if (!esAdmin()) return;
+      const next = {};
+      getAllCantones().forEach(c => { next[c] = true; });
+      saveOcrCantonesMap(next);
+      renderOcrCantonesModalBody();
+      showToast("Lectura inteligente habilitada para todos los cantones.", "success");
+    };
+    m.querySelector("#ocr-modal-all-off").onclick = () => {
+      if (!esAdmin()) return;
+      const next = {};
+      getAllCantones().forEach(c => { next[c] = false; });
+      saveOcrCantonesMap(next);
+      renderOcrCantonesModalBody();
+      showToast("Lectura inteligente deshabilitada para todos los cantones.", "info");
+    };
+  }
+  renderOcrCantonesModalBody();
+  m.classList.remove("hidden");
+};
 
 function setOcrStatus(msg, tone) {
   const el = document.getElementById("borrador-ocr-status");
@@ -13763,6 +13957,10 @@ async function callProxyOcr(ocrImg, dignidad, candidatos, browserKey) {
 }
 
 window.leerBorradorConGemini = async function(autoTriggered = false, preferredSource = null) {
+  if (!isOcrEnabledForCurrentCanton()) {
+    if (!autoTriggered) showToast("La lectura inteligente de actas no está habilitada para este cantón.", "warning");
+    return;
+  }
   const imgData = preferredSource === "oficial"
     ? (window.currentActaFotoData || window.currentBorradorFotoData)
     : preferredSource === "borrador"
@@ -13873,6 +14071,26 @@ window.leerBorradorConGemini = async function(autoTriggered = false, preferredSo
     }
   }
 };
+
+document.addEventListener("change", e => {
+  if (e.target && e.target.id === "sel-canton") {
+    setTimeout(window.refreshOcrCantonUI, 0);
+  }
+});
+let lastSig = "";
+setInterval(() => {
+  try {
+    const r = (window.__UM && window.__UM.rol) ? window.__UM.rol() : "";
+    const c = getCurrentCanton();
+    const m = JSON.stringify(getOcrCantonesMap());
+    const sig = r + "|" + c + "|" + m;
+    if (sig !== lastSig) {
+      lastSig = sig;
+      window.refreshOcrCantonUI();
+    }
+  } catch (e) {}
+}, 1000);
+setTimeout(window.refreshOcrCantonUI, 300);
 })();
 </script>
 </body></html>
