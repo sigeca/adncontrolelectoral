@@ -802,7 +802,7 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
 
         // 9. Auditoría
         if (isset($data['audit']) && is_array($data['audit'])) {
-            $pdo->exec('TRUNCATE TABLE auditoria');
+            $pdo->exec('DELETE FROM auditoria');
             $stmtAud = $pdo->prepare('INSERT INTO auditoria (t, usr, op, det) VALUES (?, ?, ?, ?)');
             foreach (array_slice($data['audit'], 0, 300) as $a) {
                 if (!is_array($a)) continue;
