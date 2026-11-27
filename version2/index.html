@@ -3371,6 +3371,20 @@ window.addEventListener("pageshow",function(e){if(e.persisted){var b=document.qu
     };
 
     function loadAppState() {
+      const isWeb = (location.protocol === 'http:' || location.protocol === 'https:');
+      if (isWeb) {
+        try {
+          localStorage.removeItem(LOCAL_STORAGE_KEY);
+          localStorage.removeItem(BACKUP_STORAGE_KEY);
+        } catch (e) {}
+        AppState.distributivo = [];
+        AppState.candidatos = [];
+        AppState.delegados = [];
+        AppState.actas = {};
+        AppState.respaldos = {};
+        AppState._initialized = true;
+        return;
+      }
       if (window.BAKED_ELECTORAL_STATE && typeof window.BAKED_ELECTORAL_STATE === 'object') {
         const baked = window.BAKED_ELECTORAL_STATE;
         if (Array.isArray(baked.distributivo)) AppState.distributivo = baked.distributivo;
@@ -3423,6 +3437,7 @@ window.addEventListener("pageshow",function(e){if(e.persisted){var b=document.qu
     }
 
     async function asyncHydrateFromIDB() {
+      if (location.protocol === 'http:' || location.protocol === 'https:') return;
       try {
         const idbData = await loadFromIndexedDB();
         if (idbData && typeof idbData === 'object') {
@@ -3486,6 +3501,11 @@ window.addEventListener("pageshow",function(e){if(e.persisted){var b=document.qu
 
     function saveAppState() {
       if (window.__CIRC_SWAP) return;
+      if (window.__SYNC && typeof window.__SYNC.isShared === 'function' && window.__SYNC.isShared()) {
+        try { window.__SYNC.schedule(); } catch (e) {}
+        updateGlobalProgress();
+        return;
+      }
       const payload = {
         distributivo: AppState.distributivo,
         candidatos: AppState.candidatos,
@@ -12604,14 +12624,17 @@ function applyMysqlState(d){
 }
 async function startMysql(){
  if(location.protocol!=="http:"&&location.protocol!=="https:")return false;
+ overlay("Cargando datos desde la base de datos…");
  try{
   const r=await apiFetch("load",{cache:"no-store"});
   const j=await r.json().catch(()=>null);
   if(!r.ok||!j||!j.ok||!j.data){
+   hideOverlay();
    if(j&&j.error){console.warn("mysql load error:",j.error);toast("Error de conexión MySQL: "+j.error,"error")}
    return false;
   }
   mysqlMode=true;
+  try{["CNE_ELECTORAL_STATE_2026","CNE_ELECTORAL_BACKUP_2026","CNE_ALIM_2027","CNE_NOTIF_2027"].forEach(k=>localStorage.removeItem(k))}catch(e){}
   const d=j.data;
   const isEmpty=(!d.dist||!d.dist.length)&&(!d.cand||!d.cand.length)&&(!d.deleg||!d.deleg.length)&&(!d.actas||!Object.keys(d.actas).length);
   if(isEmpty){
@@ -12619,8 +12642,9 @@ async function startMysql(){
   }else{
    applyMysqlState(d);initialized=true;ready=true;setStatus("ok");
   }
+  hideOverlay();
   return true;
- }catch(e){console.warn("mysql load",e);return false}
+ }catch(e){hideOverlay();console.warn("mysql load",e);return false}
 }
 async function start(){setStatus("connecting");
  if(await startMysql()){return}

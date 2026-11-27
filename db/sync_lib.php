@@ -47,8 +47,55 @@ function resolveDistId(array $item, array $byHash, array $byCpr): ?int
     return $byCpr[$cpr] ?? null;
 }
 
+function ensureSchema(PDO $pdo): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    $colsCand = $pdo->query('SHOW COLUMNS FROM candidatos')->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('parroquia', $colsCand, true)) {
+        $pdo->exec("ALTER TABLE candidatos ADD COLUMN parroquia VARCHAR(120) NOT NULL DEFAULT '' AFTER canton");
+    }
+    if (!in_array('extra_json', $colsCand, true)) {
+        $pdo->exec('ALTER TABLE candidatos ADD COLUMN extra_json LONGTEXT NULL AFTER orden_visual');
+    }
+
+    $colsUsr = $pdo->query('SHOW COLUMNS FROM usuarios')->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('ver_pref', $colsUsr, true)) {
+        $pdo->exec('ALTER TABLE usuarios ADD COLUMN ver_pref TINYINT(1) NOT NULL DEFAULT 0 AFTER mesa');
+    }
+    if (!in_array('cedpw', $colsUsr, true)) {
+        $pdo->exec('ALTER TABLE usuarios ADD COLUMN cedpw TINYINT(1) NOT NULL DEFAULT 0 AFTER ver_pref');
+    }
+
+    $pdo->exec('CREATE TABLE IF NOT EXISTS alimentacion (
+      item_key VARCHAR(255) NOT NULL,
+      payload_json LONGTEXT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (item_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+    $pdo->exec('CREATE TABLE IF NOT EXISTS notificaciones (
+      notif_key VARCHAR(255) NOT NULL,
+      payload_json LONGTEXT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (notif_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+    $pdo->exec('CREATE TABLE IF NOT EXISTS configuracion (
+      cfg_key VARCHAR(64) NOT NULL,
+      cfg_value LONGTEXT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (cfg_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+}
+
 function loadAllFromDb(PDO $pdo): array
 {
+    ensureSchema($pdo);
     // 1. Distributivo
     $dist = [];
     $stmt = $pdo->query('SELECT canton, parroquia, zona, recinto, mesas_fem_inicio, mesas_fem_fin, mesas_masc_inicio, mesas_masc_fin, padron_mesa, electores_recinto FROM distributivo ORDER BY id ASC');
@@ -214,7 +261,7 @@ function loadAllFromDb(PDO $pdo): array
 
     // 8. Usuarios
     $users = [];
-    $stmtUsr = $pdo->query('SELECT id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa, ver_pref FROM usuarios ORDER BY id ASC');
+    $stmtUsr = $pdo->query('SELECT id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa, ver_pref, cedpw FROM usuarios ORDER BY id ASC');
     foreach ($stmtUsr as $r) {
         $users[] = [
             'id'        => $r['id'],
@@ -236,6 +283,7 @@ function loadAllFromDb(PDO $pdo): array
             'recinto'   => $r['recinto'],
             'mesa'      => $r['mesa'],
             'verPref'   => (bool)$r['ver_pref'],
+            'cedpw'     => (bool)$r['cedpw'],
         ];
     }
 
@@ -288,6 +336,7 @@ function loadAllFromDb(PDO $pdo): array
 
 function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
 {
+    ensureSchema($pdo);
     $counts = [];
     $pdo->beginTransaction();
 
@@ -688,8 +737,8 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
         // 8. Usuarios
         if (isset($data['users']) && is_array($data['users'])) {
             $sqlUsr = 'INSERT INTO usuarios
-                (id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa, ver_pref)
-                VALUES (:id, :nom, :ape, :ced, :tel, :mail, :usr, :salt, :hash, :rol, :act, :blq, :cmb, :ult, :can, :par, :rec, :mes, :vpr)
+                (id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa, ver_pref, cedpw)
+                VALUES (:id, :nom, :ape, :ced, :tel, :mail, :usr, :salt, :hash, :rol, :act, :blq, :cmb, :ult, :can, :par, :rec, :mes, :vpr, :cpw)
                 ON DUPLICATE KEY UPDATE
                   nom = VALUES(nom),
                   ape = VALUES(ape),
@@ -708,7 +757,8 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
                   parroquia = VALUES(parroquia),
                   recinto = VALUES(recinto),
                   mesa = VALUES(mesa),
-                  ver_pref = VALUES(ver_pref)';
+                  ver_pref = VALUES(ver_pref),
+                  cedpw = VALUES(cedpw)';
             $stmtUsr = $pdo->prepare($sqlUsr);
             $uIds = [];
             foreach ($data['users'] as $u) {
@@ -735,6 +785,7 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
                     ':rec'  => (string)($u['recinto'] ?? ''),
                     ':mes'  => (string)($u['mesa'] ?? ''),
                     ':vpr'  => !empty($u['verPref']) ? 1 : 0,
+                    ':cpw'  => !empty($u['cedpw']) ? 1 : 0,
                 ]);
             }
             if ($allowDeletes && count($uIds) > 0) {
