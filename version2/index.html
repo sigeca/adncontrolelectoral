@@ -12411,7 +12411,7 @@ const hid=s=>"h"+h32(s,1)+h32(s,7).slice(0,8);
 const bucketOf=(h,N)=>parseInt(h.slice(1,7),16)%N;
 const norm=v=>String(v==null?"":v).trim().toUpperCase();
 
-let db=null,assets=null,dl=null,ready=false,initialized=false,readOnly=false,gotServer=false,pushing=false,again=false,timer=null,assetsBroken=false,seeding=false;
+let db=null,mysqlMode=false,mysqlApiBase="../api.php",assets=null,dl=null,ready=false,initialized=false,readOnly=false,gotServer=false,pushing=false,again=false,timer=null,assetsBroken=false,seeding=false;
 const LAST={},ORD={},REMOTE_DOC={},EXISTS=new Set(),LOC={};
 Object.keys(LISTS).forEach(L=>{LAST[L]=new Map();ORD[L]=new Map()});
 
@@ -12472,7 +12472,31 @@ async function processPhotos(){const S=src(),objs=[];[S.actas,S.resp].forEach(m=
    if(cur[0]===v)window.currentActaFotoData=r;if(cur[1]===v)window.currentBorradorFotoData=r}}}}}
 
 /* ---------- escritura ---------- */
-function schedule(){if(!db||readOnly)return;clearTimeout(timer);timer=setTimeout(push,600)}
+function schedule(){if((!db&&!mysqlMode)||readOnly)return;clearTimeout(timer);timer=setTimeout(push,600)}
+async function apiFetch(action,opts){
+ const bases=[mysqlApiBase,"api.php"];
+ let last=null;
+ for(const base of bases){
+  const r=await fetch(base+"?action="+encodeURIComponent(action),opts);
+  last=r;
+  if(r.status!==404){mysqlApiBase=base;return r}
+ }
+ return last;
+}
+async function pushMysql(){
+ if(pushing){again=true;return}
+ pushing=true;let ok=true;
+ try{
+  setStatus("saving");
+  await processPhotos();
+  const S=src();
+  const payload={dist:S.dist,cand:S.cand,deleg:S.deleg,actas:S.actas,resp:S.resp,pagos:S.pagos,tarifas:S.tarifas,alim:S.alim,notif:S.notif,users:S.users,audit:S.audit};
+  const r=await apiFetch("sync",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  const j=await r.json().catch(()=>null);
+  if(!r.ok||!j||!j.ok)throw new Error((j&&j.error)||("HTTP "+r.status));
+ }catch(e){ok=false;console.warn("mysql sync push",e);setStatus("error");setTimeout(schedule,5000)}
+ finally{pushing=false;if(ok)setStatus("ok");if(again){again=false;schedule()}}
+}
 async function writeBucket(L,b,changes){const path="kv/"+L+"_"+b,ref=db.doc(path);
  for(let a=0;a<6;a++){try{
   if(EXISTS.has(path))await ref.update({v:changes});
@@ -12487,7 +12511,7 @@ async function writeBucket(L,b,changes){const path="kv/"+L+"_"+b,ref=db.doc(path
   if(c==="revoked"||c==="not_granted"){setReadOnly(true);throw e}
   throw e}}
  throw new Error("rate")}
-async function push(){if(!db||!ready||readOnly)return;if(pushing){again=true;return}pushing=true;let ok=true;
+async function push(){if(mysqlMode){return pushMysql()}if(!db||!ready||readOnly)return;if(pushing){again=true;return}pushing=true;let ok=true;
  try{await processPhotos();const S=src();
   for(const L of Object.keys(LISTS)){const cur=extract(L,S[L]),last=LAST[L],N=LISTS[L].N,byB={};
    const loc=LOC[L]||new Map(),put=(b,h,v)=>{(byB[b]=byB[b]||{})[h]=v};
@@ -12565,7 +12589,41 @@ window.alert=function(m){toast(String(m),"warning")};
 window.print=function(){toast("La impresión directa no está disponible aquí. Exporta a Excel para imprimir.","info")};
 
 /* ---------- arranque ---------- */
+function applyMysqlState(d){
+ const A=window.AppState,U=window.__UM,S=src();
+ const f={dist:Array.isArray(d.dist)?d.dist:S.dist,del:Array.isArray(d.deleg)?d.deleg:S.deleg,actas:(d.actas&&typeof d.actas==="object")?d.actas:S.actas};
+ if(!(U&&U.setFull&&U.setFull(f))){A.distributivo=f.dist;A.delegados=f.del;A.actas=f.actas}
+ if(Array.isArray(d.cand))A.candidatos=d.cand;
+ if(d.resp&&typeof d.resp==="object")A.respaldos=d.resp;
+ if(d.alim&&window.__ALIM)window.__ALIM.set(d.alim);
+ if(d.notif&&window.__NOTIF)window.__NOTIF.set(d.notif);
+ if((d.pagos||d.tarifas)&&window.__PAGOS)window.__PAGOS.set(d.tarifas||S.tarifas,d.pagos||S.pagos);
+ if((d.users||d.audit)&&U&&U.setShared)U.setShared(d.users||S.users,d.audit||S.audit,!initialized);
+ refresh(Object.keys(LISTS));
+ if(typeof window.refreshOcrCantonUI==="function")setTimeout(window.refreshOcrCantonUI,0);
+}
+async function startMysql(){
+ if(location.protocol!=="http:"&&location.protocol!=="https:")return false;
+ try{
+  const r=await apiFetch("load",{cache:"no-store"});
+  const j=await r.json().catch(()=>null);
+  if(!r.ok||!j||!j.ok||!j.data){
+   if(j&&j.error){console.warn("mysql load error:",j.error);toast("Error de conexión MySQL: "+j.error,"error")}
+   return false;
+  }
+  mysqlMode=true;
+  const d=j.data;
+  const isEmpty=(!d.dist||!d.dist.length)&&(!d.cand||!d.cand.length)&&(!d.deleg||!d.deleg.length)&&(!d.actas||!Object.keys(d.actas).length);
+  if(isEmpty){
+   initialized=true;ready=true;await pushMysql();
+  }else{
+   applyMysqlState(d);initialized=true;ready=true;setStatus("ok");
+  }
+  return true;
+ }catch(e){console.warn("mysql load",e);return false}
+}
 async function start(){setStatus("connecting");
+ if(await startMysql()){return}
  let c=null;for(let i=0;i<20&&!(c=window.claude)&&true;i++)await sleep(100);
  if(!c||typeof c.use!=="function"){setStatus("local");return}
  patchDownloads();c.use("downloads").then(x=>{dl=x}).catch(()=>{});
@@ -12578,8 +12636,8 @@ async function start(){setStatus("connecting");
  db.collection("kv").onSnapshot(onSnap,e=>{console.warn("snapshot",e);clearTimeout(skipT);
   if(e&&e.code==="revoked"){setReadOnly(true);return}hideOverlay();setStatus("offline");toast("Se perdió la conexión con la base compartida. Recarga la página para reconectar.","error")});
  const pre=setInterval(()=>{if(ready){clearTimeout(skipT);clearInterval(pre)}},500)}
-setInterval(()=>{try{if(document.hidden||!ready||readOnly||pushing||!window.__UM||__UM.rol()!=="superadmin")return;const lc=LOC.actas;if(!lc)return;const N=LISTS.actas.N;for(const [h,ls] of lc){if(ls.some(b=>b!==bucketOf(h,N))){schedule();return}}}catch(e){}},20000);
-window.__SYNC={schedule,LOC,status:()=>curStatus,isShared:()=>!!db};
+setInterval(()=>{try{if(mysqlMode||document.hidden||!ready||readOnly||pushing||!window.__UM||__UM.rol()!=="superadmin")return;const lc=LOC.actas;if(!lc)return;const N=LISTS.actas.N;for(const [h,ls] of lc){if(ls.some(b=>b!==bucketOf(h,N))){schedule();return}}}catch(e){}},20000);
+window.__SYNC={schedule,LOC,status:()=>curStatus,isShared:()=>!!(db||mysqlMode)};
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>setTimeout(start,50));else setTimeout(start,50);
 })();
 

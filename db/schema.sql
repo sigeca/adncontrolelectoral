@@ -36,8 +36,10 @@ CREATE TABLE IF NOT EXISTS `candidatos` (
   `color` VARCHAR(32) NOT NULL DEFAULT '#2563eb',
   `nombre` VARCHAR(255) NOT NULL,
   `canton` VARCHAR(120) NOT NULL DEFAULT '',
+  `parroquia` VARCHAR(120) NOT NULL DEFAULT '',
   `circunscripcion` VARCHAR(120) NOT NULL DEFAULT '',
   `orden_visual` INT NOT NULL DEFAULT 0,
+  `extra_json` LONGTEXT NULL,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_cand_dignidad_canton` (`dignidad`, `canton`)
@@ -195,6 +197,7 @@ CREATE TABLE IF NOT EXISTS `usuarios` (
   `parroquia` VARCHAR(120) NOT NULL DEFAULT '',
   `recinto` VARCHAR(255) NOT NULL DEFAULT '',
   `mesa` VARCHAR(120) NOT NULL DEFAULT '',
+  `ver_pref` TINYINT(1) NOT NULL DEFAULT 0,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_usuarios_user` (`user`)
@@ -216,3 +219,27 @@ INSERT IGNORE INTO `tarifas` (`rol_key`, `monto`) VALUES
   ('MESA', 25.00),
   ('COORD', 35.00),
   ('ESCANER', 30.00);
+
+-- 12. Alimentación de personal
+CREATE TABLE IF NOT EXISTS `alimentacion` (
+  `item_key` VARCHAR(255) NOT NULL,
+  `payload_json` LONGTEXT NULL,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`item_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 13. Notificaciones del sistema
+CREATE TABLE IF NOT EXISTS `notificaciones` (
+  `notif_key` VARCHAR(255) NOT NULL,
+  `payload_json` LONGTEXT NULL,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`notif_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 14. Configuración general (JSON, ej. ocr_cantones)
+CREATE TABLE IF NOT EXISTS `configuracion` (
+  `cfg_key` VARCHAR(64) NOT NULL,
+  `cfg_value` LONGTEXT NULL,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`cfg_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

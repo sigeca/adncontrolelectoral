@@ -75,9 +75,11 @@ function loadAllFromDb(PDO $pdo): array
     }
 
     $cand = [];
-    $stmtCand = $pdo->query('SELECT id, dignidad, lista, partido, color, nombre, canton, circunscripcion FROM candidatos ORDER BY orden_visual ASC, id ASC');
+    $stmtCand = $pdo->query('SELECT id, dignidad, lista, partido, color, nombre, canton, parroquia, circunscripcion, extra_json FROM candidatos ORDER BY orden_visual ASC, id ASC');
     foreach ($stmtCand as $r) {
-        $cand[] = [
+        $extra = !empty($r['extra_json']) ? json_decode($r['extra_json'], true) : null;
+        $item = is_array($extra) ? $extra : [];
+        $item = array_merge($item, [
             'id'               => $r['id'],
             'dignidad'         => $r['dignidad'],
             'lista'            => $r['lista'],
@@ -85,9 +87,11 @@ function loadAllFromDb(PDO $pdo): array
             'color'            => $r['color'],
             'nombre'           => $r['nombre'],
             'canton'           => $r['canton'],
+            'parroquia'        => $r['parroquia'] ?? '',
             'circunscripcion'  => $r['circunscripcion'],
             'candidatos_orden' => $ordenMap[$r['id']] ?? null,
-        ];
+        ]);
+        $cand[] = $item;
     }
 
     // 3. Delegados
@@ -175,11 +179,18 @@ function loadAllFromDb(PDO $pdo): array
         $resp[$r['resp_key']] = $obj;
     }
 
-    // 6. Tarifas
+    // 6. Tarifas + Configuración
     $tarifas = [];
     $stmtTar = $pdo->query('SELECT rol_key, monto FROM tarifas');
     foreach ($stmtTar as $r) {
         $tarifas[$r['rol_key']] = (float)$r['monto'];
+    }
+    $stmtCfg = $pdo->query('SELECT cfg_key, cfg_value FROM configuracion');
+    foreach ($stmtCfg as $r) {
+        $decoded = $r['cfg_value'] !== null ? json_decode($r['cfg_value'], true) : null;
+        if ($decoded !== null) {
+            $tarifas[$r['cfg_key']] = $decoded;
+        }
     }
 
     // 7. Pagos
@@ -203,7 +214,7 @@ function loadAllFromDb(PDO $pdo): array
 
     // 8. Usuarios
     $users = [];
-    $stmtUsr = $pdo->query('SELECT id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa FROM usuarios ORDER BY id ASC');
+    $stmtUsr = $pdo->query('SELECT id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa, ver_pref FROM usuarios ORDER BY id ASC');
     foreach ($stmtUsr as $r) {
         $users[] = [
             'id'        => $r['id'],
@@ -224,6 +235,7 @@ function loadAllFromDb(PDO $pdo): array
             'parroquia' => $r['parroquia'],
             'recinto'   => $r['recinto'],
             'mesa'      => $r['mesa'],
+            'verPref'   => (bool)$r['ver_pref'],
         ];
     }
 
@@ -239,6 +251,26 @@ function loadAllFromDb(PDO $pdo): array
         ];
     }
 
+    // 10. Alimentación
+    $alim = [];
+    $stmtAlim = $pdo->query('SELECT item_key, payload_json FROM alimentacion');
+    foreach ($stmtAlim as $r) {
+        $val = $r['payload_json'] !== null ? json_decode($r['payload_json'], true) : null;
+        if ($val !== null) {
+            $alim[$r['item_key']] = $val;
+        }
+    }
+
+    // 11. Notificaciones
+    $notif = [];
+    $stmtNotif = $pdo->query('SELECT notif_key, payload_json FROM notificaciones');
+    foreach ($stmtNotif as $r) {
+        $val = $r['payload_json'] !== null ? json_decode($r['payload_json'], true) : null;
+        if ($val !== null) {
+            $notif[$r['notif_key']] = $val;
+        }
+    }
+
     return [
         'dist'    => $dist,
         'cand'    => $cand,
@@ -247,6 +279,8 @@ function loadAllFromDb(PDO $pdo): array
         'resp'    => empty($resp) ? new stdClass() : $resp,
         'tarifas' => empty($tarifas) ? new stdClass() : $tarifas,
         'pagos'   => empty($pagos) ? new stdClass() : $pagos,
+        'alim'    => empty($alim) ? new stdClass() : $alim,
+        'notif'   => empty($notif) ? new stdClass() : $notif,
         'users'   => $users,
         'audit'   => $audit,
     ];
@@ -311,8 +345,8 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
         // 2. Candidatos + candidatos_orden
         if (isset($data['cand']) && is_array($data['cand'])) {
             $sqlCand = 'INSERT INTO candidatos
-                (id, dignidad, lista, partido, color, nombre, canton, circunscripcion, orden_visual)
-                VALUES (:id, :dig, :lis, :par, :col, :nom, :can, :cir, :ord)
+                (id, dignidad, lista, partido, color, nombre, canton, parroquia, circunscripcion, orden_visual, extra_json)
+                VALUES (:id, :dig, :lis, :par, :col, :nom, :can, :parr, :cir, :ord, :ext)
                 ON DUPLICATE KEY UPDATE
                   dignidad = VALUES(dignidad),
                   lista = VALUES(lista),
@@ -320,27 +354,38 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
                   color = VALUES(color),
                   nombre = VALUES(nombre),
                   canton = VALUES(canton),
+                  parroquia = VALUES(parroquia),
                   circunscripcion = VALUES(circunscripcion),
-                  orden_visual = VALUES(orden_visual)';
+                  orden_visual = VALUES(orden_visual),
+                  extra_json = VALUES(extra_json)';
             $stmtCand = $pdo->prepare($sqlCand);
             $delOrd = $pdo->prepare('DELETE FROM candidatos_orden WHERE candidato_id = ?');
             $insOrd = $pdo->prepare('INSERT INTO candidatos_orden (candidato_id, orden, nombre) VALUES (?, ?, ?)');
 
+            $knownCandKeys = ['id','dignidad','lista','partido','color','nombre','canton','parroquia','circunscripcion','candidatos_orden'];
             $candIds = [];
             foreach ($data['cand'] as $idx => $c) {
                 if (!is_array($c) || empty($c['id'])) continue;
                 $cid = (string)$c['id'];
                 $candIds[$cid] = true;
+                $extra = [];
+                foreach ($c as $ck => $cv) {
+                    if (!in_array($ck, $knownCandKeys, true)) {
+                        $extra[$ck] = $cv;
+                    }
+                }
                 $stmtCand->execute([
-                    ':id'  => $cid,
-                    ':dig' => (string)($c['dignidad'] ?? ''),
-                    ':lis' => (string)($c['lista'] ?? ''),
-                    ':par' => (string)($c['partido'] ?? ''),
-                    ':col' => (string)($c['color'] ?? '#2563eb'),
-                    ':nom' => (string)($c['nombre'] ?? ''),
-                    ':can' => (string)($c['canton'] ?? ''),
-                    ':cir' => (string)($c['circunscripcion'] ?? ''),
-                    ':ord' => (int)$idx,
+                    ':id'   => $cid,
+                    ':dig'  => (string)($c['dignidad'] ?? ''),
+                    ':lis'  => (string)($c['lista'] ?? ''),
+                    ':par'  => (string)($c['partido'] ?? ''),
+                    ':col'  => (string)($c['color'] ?? '#2563eb'),
+                    ':nom'  => (string)($c['nombre'] ?? ''),
+                    ':can'  => (string)($c['canton'] ?? ''),
+                    ':parr' => (string)($c['parroquia'] ?? ''),
+                    ':cir'  => (string)($c['circunscripcion'] ?? ''),
+                    ':ord'  => (int)$idx,
+                    ':ext'  => empty($extra) ? null : json_encode($extra, JSON_UNESCAPED_UNICODE),
                 ]);
                 $delOrd->execute([$cid]);
                 if (!empty($c['candidatos_orden']) && is_array($c['candidatos_orden'])) {
@@ -586,11 +631,16 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
             $counts['resp'] = count($respKeys);
         }
 
-        // 6. Tarifas
+        // 6. Tarifas + Configuración
         if (isset($data['tarifas']) && is_array($data['tarifas'])) {
             $stmtTar = $pdo->prepare('INSERT INTO tarifas (rol_key, monto) VALUES (?, ?) ON DUPLICATE KEY UPDATE monto = VALUES(monto)');
+            $stmtCfg = $pdo->prepare('INSERT INTO configuracion (cfg_key, cfg_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE cfg_value = VALUES(cfg_value)');
             foreach ($data['tarifas'] as $rk => $m) {
-                $stmtTar->execute([(string)$rk, (float)$m]);
+                if (is_array($m)) {
+                    $stmtCfg->execute([(string)$rk, json_encode($m, JSON_UNESCAPED_UNICODE)]);
+                } else {
+                    $stmtTar->execute([(string)$rk, (float)$m]);
+                }
             }
             $counts['tarifas'] = count($data['tarifas']);
         }
@@ -638,8 +688,8 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
         // 8. Usuarios
         if (isset($data['users']) && is_array($data['users'])) {
             $sqlUsr = 'INSERT INTO usuarios
-                (id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa)
-                VALUES (:id, :nom, :ape, :ced, :tel, :mail, :usr, :salt, :hash, :rol, :act, :blq, :cmb, :ult, :can, :par, :rec, :mes)
+                (id, nom, ape, ced, tel, mail, user, salt, hash, rol, activo, bloq, cambio, ultimo, canton, parroquia, recinto, mesa, ver_pref)
+                VALUES (:id, :nom, :ape, :ced, :tel, :mail, :usr, :salt, :hash, :rol, :act, :blq, :cmb, :ult, :can, :par, :rec, :mes, :vpr)
                 ON DUPLICATE KEY UPDATE
                   nom = VALUES(nom),
                   ape = VALUES(ape),
@@ -657,7 +707,8 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
                   canton = VALUES(canton),
                   parroquia = VALUES(parroquia),
                   recinto = VALUES(recinto),
-                  mesa = VALUES(mesa)';
+                  mesa = VALUES(mesa),
+                  ver_pref = VALUES(ver_pref)';
             $stmtUsr = $pdo->prepare($sqlUsr);
             $uIds = [];
             foreach ($data['users'] as $u) {
@@ -683,6 +734,7 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
                     ':par'  => (string)($u['parroquia'] ?? ''),
                     ':rec'  => (string)($u['recinto'] ?? ''),
                     ':mes'  => (string)($u['mesa'] ?? ''),
+                    ':vpr'  => !empty($u['verPref']) ? 1 : 0,
                 ]);
             }
             if ($allowDeletes && count($uIds) > 0) {
@@ -711,6 +763,48 @@ function syncToDb(PDO $pdo, array $data, bool $allowDeletes = true): array
                 ]);
             }
             $counts['audit'] = min(300, count($data['audit']));
+        }
+
+        // 10. Alimentación
+        if (isset($data['alim']) && is_array($data['alim'])) {
+            $stmtAlim = $pdo->prepare('INSERT INTO alimentacion (item_key, payload_json) VALUES (?, ?) ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)');
+            $alimKeys = [];
+            foreach ($data['alim'] as $ak => $av) {
+                $ak = (string)$ak;
+                $alimKeys[$ak] = true;
+                $stmtAlim->execute([$ak, json_encode($av, JSON_UNESCAPED_UNICODE)]);
+            }
+            if ($allowDeletes) {
+                $existing = $pdo->query('SELECT item_key FROM alimentacion')->fetchAll(PDO::FETCH_COLUMN);
+                $delAlim = $pdo->prepare('DELETE FROM alimentacion WHERE item_key = ?');
+                foreach ($existing as $ek) {
+                    if (!isset($alimKeys[$ek])) {
+                        $delAlim->execute([$ek]);
+                    }
+                }
+            }
+            $counts['alim'] = count($alimKeys);
+        }
+
+        // 11. Notificaciones
+        if (isset($data['notif']) && is_array($data['notif'])) {
+            $stmtNotif = $pdo->prepare('INSERT INTO notificaciones (notif_key, payload_json) VALUES (?, ?) ON DUPLICATE KEY UPDATE payload_json = VALUES(payload_json)');
+            $notifKeys = [];
+            foreach ($data['notif'] as $nk => $nv) {
+                $nk = (string)$nk;
+                $notifKeys[$nk] = true;
+                $stmtNotif->execute([$nk, json_encode($nv, JSON_UNESCAPED_UNICODE)]);
+            }
+            if ($allowDeletes) {
+                $existing = $pdo->query('SELECT notif_key FROM notificaciones')->fetchAll(PDO::FETCH_COLUMN);
+                $delNotif = $pdo->prepare('DELETE FROM notificaciones WHERE notif_key = ?');
+                foreach ($existing as $ek) {
+                    if (!isset($notifKeys[$ek])) {
+                        $delNotif->execute([$ek]);
+                    }
+                }
+            }
+            $counts['notif'] = count($notifKeys);
         }
 
         $pdo->commit();
